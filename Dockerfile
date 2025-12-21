@@ -27,8 +27,12 @@ WORKDIR /app
 # Copy the server script
 COPY server.py .
 
+# Default port (Railway will override with PORT env var)
+ENV PORT=8080
+
 # Expose port
 EXPOSE 8080
 
-# Run the server
-CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--timeout", "600", "server:app"]
+# Run the server - use shell form so $PORT is expanded
+CMD gunicorn --bind 0.0.0.0:$PORT --timeout 600 server:app
+
