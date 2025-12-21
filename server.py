@@ -14,7 +14,6 @@ import uuid
 import threading
 import requests
 from flask import Flask, request, jsonify, send_file
-from pdf2zh import translate_file
 import tempfile
 import shutil
 
@@ -23,29 +22,23 @@ app = Flask(__name__)
 # In-memory job storage (use Redis for production)
 jobs = {}
 
-# S3/Cloud storage config (optional)
-STORAGE_BUCKET = os.environ.get("STORAGE_BUCKET", "")
-AWS_ACCESS_KEY = os.environ.get("AWS_ACCESS_KEY_ID", "")
-AWS_SECRET_KEY = os.environ.get("AWS_SECRET_ACCESS_KEY", "")
-
-def upload_to_s3(file_path, key):
-    """Upload file to S3 and return public URL"""
-    try:
-        import boto3
-        s3 = boto3.client(
-            's3',
-            aws_access_key_id=AWS_ACCESS_KEY,
-            aws_secret_access_key=AWS_SECRET_KEY
-        )
-        s3.upload_file(file_path, STORAGE_BUCKET, key, ExtraArgs={'ACL': 'public-read'})
-        return f"https://{STORAGE_BUCKET}.s3.amazonaws.com/{key}"
-    except Exception as e:
-        print(f"S3 upload failed: {e}")
-        return None
+# Lazy import of pdf2zh to handle import errors gracefully
+pdf2zh_available = False
+try:
+    from pdf2zh import translate_file
+    pdf2zh_available = True
+    print("[Server] pdf2zh loaded successfully")
+except Exception as e:
+    print(f"[Server] Warning: pdf2zh not available: {e}")
 
 def translate_pdf_async(job_id, pdf_url, target_lang, callback_url, book_id):
     """Background task to translate PDF"""
+    global pdf2zh_available
+    
     try:
+        if not pdf2zh_available:
+            raise Exception("pdf2zh is not available")
+            
         jobs[job_id]["status"] = "processing"
         
         # Download PDF
@@ -65,24 +58,18 @@ def translate_pdf_async(job_id, pdf_url, target_lang, callback_url, book_id):
             output_path,
             lang_in="auto",
             lang_out=target_lang,
-            service="google",  # Can be changed to openai, etc.
+            service="google",
         )
         
-        # Upload translated PDF
-        if STORAGE_BUCKET and AWS_ACCESS_KEY:
-            translated_url = upload_to_s3(output_path, f"translations/{book_id}/{job_id}.pdf")
-        else:
-            # For local testing, keep file path
-            translated_url = f"/download/{job_id}"
-            shutil.move(output_path, f"/tmp/{job_id}.pdf")
+        # For now, keep file locally
+        translated_url = f"/download/{job_id}"
+        shutil.move(output_path, f"/tmp/{job_id}.pdf")
         
         jobs[job_id]["status"] = "completed"
         jobs[job_id]["translated_url"] = translated_url
         
         # Cleanup
         os.unlink(input_path)
-        if os.path.exists(output_path):
-            os.unlink(output_path)
         
         # Send callback
         if callback_url:
@@ -116,10 +103,25 @@ def translate_pdf_async(job_id, pdf_url, target_lang, callback_url, book_id):
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "pdf-translate"})
+    return jsonify({
+        "status": "ok", 
+        "service": "pdf-translate",
+        "pdf2zh_available": pdf2zh_available
+    })
+
+@app.route("/", methods=["GET"])
+def root():
+    return jsonify({
+        "service": "pdf-translate",
+        "version": "1.0.0",
+        "endpoints": ["/health", "/translate", "/status/<job_id>"]
+    })
 
 @app.route("/translate", methods=["POST"])
 def translate():
+    if not pdf2zh_available:
+        return jsonify({"error": "pdf2zh is not available on this server"}), 503
+    
     data = request.json
     
     book_id = data.get("bookId")
@@ -165,7 +167,7 @@ def status(job_id):
 
 @app.route("/download/<job_id>", methods=["GET"])
 def download(job_id):
-    """Download translated PDF (for local testing)"""
+    """Download translated PDF"""
     file_path = f"/tmp/{job_id}.pdf"
     if os.path.exists(file_path):
         return send_file(file_path, mimetype="application/pdf")
@@ -173,4 +175,6 @@ def download(job_id):
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port, debug=True)
+    print(f"[Server] Starting on port {port}")
+    app.run(host="0.0.0.0", port=port, debug=False)
+
