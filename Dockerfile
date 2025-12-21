@@ -1,7 +1,7 @@
 FROM python:3.11-slim
 
-# Install Flask only
-RUN pip install --no-cache-dir flask gunicorn
+# Install Flask with CORS support
+RUN pip install --no-cache-dir flask gunicorn flask-cors
 
 WORKDIR /app
 COPY server.py .
