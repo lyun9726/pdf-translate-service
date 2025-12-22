@@ -14,9 +14,27 @@ import tempfile
 import shutil
 import time
 import subprocess
+import logging
 
-print("[Server] Starting initialization...")
-print(f"[Server] Python version: {sys.version}")
+# Force unbuffered output
+sys.stdout.reconfigure(line_buffering=True)
+sys.stderr.reconfigure(line_buffering=True)
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='[%(asctime)s] %(levelname)s: %(message)s',
+    stream=sys.stdout
+)
+logger = logging.getLogger(__name__)
+
+def log(msg):
+    """Print with flush for Railway logging"""
+    print(f"[Server] {msg}", flush=True)
+    logger.info(msg)
+
+log("Starting initialization...")
+log(f"Python version: {sys.version}")
 
 app = Flask(__name__)
 CORS(app, resources={
@@ -34,7 +52,7 @@ jobs = {}
 pdf2zh_available = False
 pdf2zh_error = None
 
-print("[Server] Checking pdf2zh CLI...")
+log("Checking pdf2zh CLI...")
 try:
     result = subprocess.run(
         ["pdf2zh", "--help"],
@@ -44,16 +62,16 @@ try:
     )
     if result.returncode == 0 or "usage" in result.stdout.lower() or "usage" in result.stderr.lower():
         pdf2zh_available = True
-        print("[Server] ✓ pdf2zh CLI is available")
+        log("✓ pdf2zh CLI is available")
     else:
         pdf2zh_error = f"CLI returned code {result.returncode}: {result.stderr}"
-        print(f"[Server] ✗ pdf2zh CLI error: {pdf2zh_error}")
+        log(f"✗ pdf2zh CLI error: {pdf2zh_error}")
 except FileNotFoundError:
     pdf2zh_error = "pdf2zh command not found"
-    print(f"[Server] ✗ {pdf2zh_error}")
+    log(f"✗ {pdf2zh_error}")
 except Exception as e:
     pdf2zh_error = str(e)
-    print(f"[Server] ✗ pdf2zh check failed: {e}")
+    log(f"✗ pdf2zh check failed: {e}")
 
 def translate_pdf_async(job_id, pdf_url, target_lang, callback_url, book_id):
     """Background task to translate PDF using CLI"""
@@ -71,7 +89,7 @@ def translate_pdf_async(job_id, pdf_url, target_lang, callback_url, book_id):
         input_path = os.path.join(work_dir, "input.pdf")
         
         # Download PDF
-        print(f"[Job {job_id}] Downloading PDF...")
+        log(f"[Job {job_id}] Downloading PDF...")
         response = requests.get(pdf_url, timeout=300)
         response.raise_for_status()
         with open(input_path, 'wb') as f:
@@ -81,7 +99,7 @@ def translate_pdf_async(job_id, pdf_url, target_lang, callback_url, book_id):
         send_callback(callback_url, book_id, "processing", progress=20)
         
         # Run pdf2zh CLI
-        print(f"[Job {job_id}] Running pdf2zh translation to {target_lang}...")
+        log(f"[Job {job_id}] Running pdf2zh translation to {target_lang}...")
         jobs[job_id]["progress"] = 30
         send_callback(callback_url, book_id, "processing", progress=30)
         
@@ -144,10 +162,10 @@ def translate_pdf_async(job_id, pdf_url, target_lang, callback_url, book_id):
         jobs[job_id]["file_path"] = permanent_path
         
         send_callback(callback_url, book_id, "completed", translated_url=translated_url)
-        print(f"[Job {job_id}] ✓ Translation completed: {translated_url}")
+        log(f"[Job {job_id}] ✓ Translation completed: {translated_url}")
         
     except Exception as e:
-        print(f"[Job {job_id}] ✗ Translation failed: {e}")
+        log(f"[Job {job_id}] ✗ Translation failed: {e}")
         jobs[job_id]["status"] = "failed"
         jobs[job_id]["error"] = str(e)
         send_callback(callback_url, book_id, "failed", error=str(e))
@@ -287,9 +305,9 @@ def download(job_id):
         download_name=f"translated_{job_id}.pdf"
     )
 
-print("[Server] Routes registered")
+log("Routes registered")
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
-    print(f"[Server] Starting on port {port}")
+    log(f"Starting on port {port}")
     app.run(host="0.0.0.0", port=port)
