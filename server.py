@@ -103,19 +103,31 @@ def translate_pdf_async(job_id, pdf_url, target_lang, callback_url, book_id):
         jobs[job_id]["progress"] = 30
         send_callback(callback_url, book_id, "processing", progress=30)
         
+        # Build command with service flag
+        # pdf2zh uses -s to specify translation service: google, bing, openai, etc.
+        # Default to Google Translate (free) unless PDF2ZH_SERVICE env var is set
+        service = os.environ.get("PDF2ZH_SERVICE", "google")
+        
         cmd = [
             "pdf2zh",
             input_path,
             "-lo", target_lang,
+            "-s", service,  # Use specified translation service
             "-o", work_dir
         ]
         
+        # Log the command and environment
+        log(f"[Job {job_id}] Command: {' '.join(cmd)}")
+        log(f"[Job {job_id}] Service: {service}")
+        
+        # Pass environment variables (OPENAI_API_KEY, etc. are already in os.environ)
         result = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
             timeout=1200,  # 20 minutes timeout
-            cwd=work_dir
+            cwd=work_dir,
+            env=os.environ.copy()  # Pass all environment variables to subprocess
         )
         
         if result.returncode != 0:
