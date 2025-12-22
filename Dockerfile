@@ -1,11 +1,11 @@
-FROM python:3.11-slim
+FROM python:3.11-slim-bookworm
 
 # Install system dependencies for pdf2zh
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     wget \
     curl \
     poppler-utils \
-    libgl1-mesa-glx \
+    libgl1 \
     libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
@@ -22,5 +22,5 @@ COPY server.py .
 
 ENV PORT=8080
 
-# Use exec form for gunicorn with workers
-CMD gunicorn --bind 0.0.0.0:$PORT --timeout 1200 --workers 2 server:app
+# Use exec form for gunicorn with longer timeout for PDF translation
+CMD gunicorn --bind 0.0.0.0:$PORT --timeout 1200 --workers 1 server:app
