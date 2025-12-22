@@ -1,9 +1,9 @@
 """
 PDFMathTranslate HTTP Server for Railway
-Provides REST API for PDF translation using pdf2zh
 """
 
 import os
+import sys
 import uuid
 import threading
 import requests
@@ -12,6 +12,10 @@ from flask_cors import CORS
 import tempfile
 import shutil
 import time
+import traceback
+
+print("[Server] Starting initialization...")
+print(f"[Server] Python version: {sys.version}")
 
 app = Flask(__name__)
 CORS(app)
@@ -19,16 +23,25 @@ CORS(app)
 # In-memory job storage
 jobs = {}
 
-# Try to import pdf2zh
+# Try to import pdf2zh with detailed error logging
 pdf2zh_available = False
 translate_file = None
+pdf2zh_error = None
+
+print("[Server] Attempting to import pdf2zh...")
 try:
     from pdf2zh import translate_file as tf
     translate_file = tf
     pdf2zh_available = True
-    print("[Server] pdf2zh loaded successfully")
+    print("[Server] ✓ pdf2zh loaded successfully")
+except ImportError as e:
+    pdf2zh_error = f"ImportError: {e}"
+    print(f"[Server] ✗ pdf2zh import failed: {e}")
+    traceback.print_exc()
 except Exception as e:
-    print(f"[Server] Warning: pdf2zh not available: {e}")
+    pdf2zh_error = f"Error: {e}"
+    print(f"[Server] ✗ pdf2zh error: {e}")
+    traceback.print_exc()
 
 def translate_pdf_async(job_id, pdf_url, target_lang, callback_url, book_id):
     """Background task to translate PDF"""
@@ -40,12 +53,10 @@ def translate_pdf_async(job_id, pdf_url, target_lang, callback_url, book_id):
         
         jobs[job_id]["status"] = "processing"
         jobs[job_id]["progress"] = 10
-        
-        # Notify callback of progress
         send_callback(callback_url, book_id, "processing", progress=10)
         
         # Download PDF
-        print(f"[Job {job_id}] Downloading PDF from {pdf_url}")
+        print(f"[Job {job_id}] Downloading PDF...")
         with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp_input:
             response = requests.get(pdf_url, timeout=300)
             response.raise_for_status()
@@ -55,15 +66,12 @@ def translate_pdf_async(job_id, pdf_url, target_lang, callback_url, book_id):
         jobs[job_id]["progress"] = 20
         send_callback(callback_url, book_id, "processing", progress=20)
         
-        # Create output path
         output_path = input_path.replace(".pdf", f"_{target_lang}.pdf")
         
-        # Translate using pdf2zh
-        print(f"[Job {job_id}] Starting translation to {target_lang}")
+        print(f"[Job {job_id}] Starting translation to {target_lang}...")
         jobs[job_id]["progress"] = 30
         send_callback(callback_url, book_id, "processing", progress=30)
         
-        # Run translation
         translate_file(
             input_path,
             output_path,
@@ -74,14 +82,10 @@ def translate_pdf_async(job_id, pdf_url, target_lang, callback_url, book_id):
         
         jobs[job_id]["progress"] = 90
         
-        # Move to permanent location
         permanent_path = f"/tmp/translated_{job_id}.pdf"
         shutil.move(output_path, permanent_path)
-        
-        # Cleanup input
         os.unlink(input_path)
         
-        # Generate download URL
         base_url = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "")
         if base_url:
             translated_url = f"https://{base_url}/download/{job_id}"
@@ -93,65 +97,58 @@ def translate_pdf_async(job_id, pdf_url, target_lang, callback_url, book_id):
         jobs[job_id]["translated_url"] = translated_url
         jobs[job_id]["file_path"] = permanent_path
         
-        # Send completion callback
         send_callback(callback_url, book_id, "completed", translated_url=translated_url)
-        
-        print(f"[Job {job_id}] Translation completed: {translated_url}")
+        print(f"[Job {job_id}] ✓ Translation completed")
         
     except Exception as e:
-        print(f"[Job {job_id}] Translation failed: {e}")
+        print(f"[Job {job_id}] ✗ Translation failed: {e}")
+        traceback.print_exc()
         jobs[job_id]["status"] = "failed"
         jobs[job_id]["error"] = str(e)
-        
         send_callback(callback_url, book_id, "failed", error=str(e))
 
 def send_callback(callback_url, book_id, status, progress=None, translated_url=None, error=None):
-    """Send status callback to main app"""
     if not callback_url:
         return
-    
     try:
-        payload = {
-            "bookId": book_id,
-            "status": status,
-        }
+        payload = {"bookId": book_id, "status": status}
         if progress is not None:
             payload["progress"] = progress
         if translated_url:
             payload["translatedFileUrl"] = translated_url
         if error:
             payload["error"] = error
-        
         requests.post(callback_url, json=payload, timeout=10)
     except Exception as e:
-        print(f"[Callback] Failed to send: {e}")
+        print(f"[Callback] Failed: {e}")
 
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({
         "status": "ok",
         "service": "pdf-translate",
-        "pdf2zh_available": pdf2zh_available
+        "pdf2zh_available": pdf2zh_available,
+        "pdf2zh_error": pdf2zh_error
     })
 
 @app.route("/", methods=["GET"])
 def root():
     return jsonify({
-        "message": "PDF Translate Service is running",
+        "message": "PDF Translate Service",
         "pdf2zh_available": pdf2zh_available,
-        "endpoints": ["/health", "/translate", "/status/<job_id>", "/download/<job_id>"]
+        "pdf2zh_error": pdf2zh_error
     })
 
 @app.route("/translate", methods=["POST"])
 def translate():
     if not pdf2zh_available:
         return jsonify({
-            "error": "pdf2zh is not available on this server",
+            "error": "pdf2zh is not available",
+            "details": pdf2zh_error,
             "status": "failed"
         }), 503
     
     data = request.json or {}
-    
     book_id = data.get("bookId")
     pdf_url = data.get("pdfUrl")
     target_lang = data.get("targetLang", "zh")
@@ -168,7 +165,6 @@ def translate():
         "created_at": time.time()
     }
     
-    # Start translation in background
     thread = threading.Thread(
         target=translate_pdf_async,
         args=(job_id, pdf_url, target_lang, callback_url, book_id)
@@ -198,7 +194,6 @@ def status(job_id):
 
 @app.route("/download/<job_id>", methods=["GET"])
 def download(job_id):
-    """Download translated PDF"""
     if job_id not in jobs:
         return jsonify({"error": "Job not found"}), 404
     
@@ -215,8 +210,9 @@ def download(job_id):
         download_name=f"translated_{job_id}.pdf"
     )
 
+print("[Server] Routes registered")
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     print(f"[Server] Starting on port {port}")
-    print(f"[Server] pdf2zh available: {pdf2zh_available}")
     app.run(host="0.0.0.0", port=port)
