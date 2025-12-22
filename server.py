@@ -1,5 +1,6 @@
 """
 PDFMathTranslate HTTP Server for Railway
+Using CLI interface since Python API is not well documented
 """
 
 import os
@@ -12,7 +13,7 @@ from flask_cors import CORS
 import tempfile
 import shutil
 import time
-import traceback
+import subprocess
 
 print("[Server] Starting initialization...")
 print(f"[Server] Python version: {sys.version}")
@@ -23,69 +24,108 @@ CORS(app)
 # In-memory job storage
 jobs = {}
 
-# Try to import pdf2zh with detailed error logging
+# Check if pdf2zh CLI is available
 pdf2zh_available = False
-translate_file = None
 pdf2zh_error = None
 
-print("[Server] Attempting to import pdf2zh...")
+print("[Server] Checking pdf2zh CLI...")
 try:
-    from pdf2zh import translate_file as tf
-    translate_file = tf
-    pdf2zh_available = True
-    print("[Server] ✓ pdf2zh loaded successfully")
-except ImportError as e:
-    pdf2zh_error = f"ImportError: {e}"
-    print(f"[Server] ✗ pdf2zh import failed: {e}")
-    traceback.print_exc()
+    result = subprocess.run(
+        ["pdf2zh", "--help"],
+        capture_output=True,
+        text=True,
+        timeout=30
+    )
+    if result.returncode == 0 or "usage" in result.stdout.lower() or "usage" in result.stderr.lower():
+        pdf2zh_available = True
+        print("[Server] ✓ pdf2zh CLI is available")
+    else:
+        pdf2zh_error = f"CLI returned code {result.returncode}: {result.stderr}"
+        print(f"[Server] ✗ pdf2zh CLI error: {pdf2zh_error}")
+except FileNotFoundError:
+    pdf2zh_error = "pdf2zh command not found"
+    print(f"[Server] ✗ {pdf2zh_error}")
 except Exception as e:
-    pdf2zh_error = f"Error: {e}"
-    print(f"[Server] ✗ pdf2zh error: {e}")
-    traceback.print_exc()
+    pdf2zh_error = str(e)
+    print(f"[Server] ✗ pdf2zh check failed: {e}")
 
 def translate_pdf_async(job_id, pdf_url, target_lang, callback_url, book_id):
-    """Background task to translate PDF"""
-    global translate_file
+    """Background task to translate PDF using CLI"""
     
     try:
-        if not pdf2zh_available or translate_file is None:
-            raise Exception("pdf2zh is not available")
+        if not pdf2zh_available:
+            raise Exception(f"pdf2zh is not available: {pdf2zh_error}")
         
         jobs[job_id]["status"] = "processing"
         jobs[job_id]["progress"] = 10
         send_callback(callback_url, book_id, "processing", progress=10)
         
+        # Create temp directory for this job
+        work_dir = tempfile.mkdtemp(prefix=f"pdf2zh_{job_id}_")
+        input_path = os.path.join(work_dir, "input.pdf")
+        
         # Download PDF
         print(f"[Job {job_id}] Downloading PDF...")
-        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp_input:
-            response = requests.get(pdf_url, timeout=300)
-            response.raise_for_status()
-            tmp_input.write(response.content)
-            input_path = tmp_input.name
+        response = requests.get(pdf_url, timeout=300)
+        response.raise_for_status()
+        with open(input_path, 'wb') as f:
+            f.write(response.content)
         
         jobs[job_id]["progress"] = 20
         send_callback(callback_url, book_id, "processing", progress=20)
         
-        output_path = input_path.replace(".pdf", f"_{target_lang}.pdf")
-        
-        print(f"[Job {job_id}] Starting translation to {target_lang}...")
+        # Run pdf2zh CLI
+        print(f"[Job {job_id}] Running pdf2zh translation to {target_lang}...")
         jobs[job_id]["progress"] = 30
         send_callback(callback_url, book_id, "processing", progress=30)
         
-        translate_file(
+        cmd = [
+            "pdf2zh",
             input_path,
-            output_path,
-            lang_in="auto",
-            lang_out=target_lang,
-            service="google",
+            "-lo", target_lang,
+            "-o", work_dir
+        ]
+        
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=1200,  # 20 minutes timeout
+            cwd=work_dir
         )
+        
+        if result.returncode != 0:
+            raise Exception(f"pdf2zh failed: {result.stderr}")
+        
+        # Find output files (pdf2zh creates input-mono.pdf and input-dual.pdf)
+        mono_path = os.path.join(work_dir, "input-mono.pdf")
+        dual_path = os.path.join(work_dir, "input-dual.pdf")
+        
+        output_path = None
+        if os.path.exists(mono_path):
+            output_path = mono_path
+        elif os.path.exists(dual_path):
+            output_path = dual_path
+        else:
+            # Check for any PDF that's not input.pdf
+            for f in os.listdir(work_dir):
+                if f.endswith('.pdf') and f != 'input.pdf':
+                    output_path = os.path.join(work_dir, f)
+                    break
+        
+        if not output_path or not os.path.exists(output_path):
+            raise Exception("No output PDF found after translation")
         
         jobs[job_id]["progress"] = 90
         
+        # Move to permanent location
         permanent_path = f"/tmp/translated_{job_id}.pdf"
-        shutil.move(output_path, permanent_path)
-        os.unlink(input_path)
+        shutil.copy2(output_path, permanent_path)
         
+        # Cleanup work directory
+        shutil.rmtree(work_dir, ignore_errors=True)
+        
+        # Generate download URL
         base_url = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "")
         if base_url:
             translated_url = f"https://{base_url}/download/{job_id}"
@@ -98,11 +138,10 @@ def translate_pdf_async(job_id, pdf_url, target_lang, callback_url, book_id):
         jobs[job_id]["file_path"] = permanent_path
         
         send_callback(callback_url, book_id, "completed", translated_url=translated_url)
-        print(f"[Job {job_id}] ✓ Translation completed")
+        print(f"[Job {job_id}] ✓ Translation completed: {translated_url}")
         
     except Exception as e:
         print(f"[Job {job_id}] ✗ Translation failed: {e}")
-        traceback.print_exc()
         jobs[job_id]["status"] = "failed"
         jobs[job_id]["error"] = str(e)
         send_callback(callback_url, book_id, "failed", error=str(e))
