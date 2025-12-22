@@ -19,7 +19,13 @@ print("[Server] Starting initialization...")
 print(f"[Server] Python version: {sys.version}")
 
 app = Flask(__name__)
-CORS(app)
+CORS(app, resources={
+    r"/*": {
+        "origins": "*",
+        "methods": ["GET", "POST", "OPTIONS"],
+        "allow_headers": ["Content-Type", "Authorization"]
+    }
+})
 
 # In-memory job storage
 jobs = {}
@@ -167,8 +173,40 @@ def health():
         "status": "ok",
         "service": "pdf-translate",
         "pdf2zh_available": pdf2zh_available,
-        "pdf2zh_error": pdf2zh_error
+        "pdf2zh_error": pdf2zh_error,
+        "active_jobs": len(jobs)
     })
+
+@app.route("/test-pdf2zh", methods=["GET"])
+def test_pdf2zh():
+    """Synchronous test to verify pdf2zh CLI works"""
+    import sys
+    
+    if not pdf2zh_available:
+        return jsonify({"error": "pdf2zh not available", "details": pdf2zh_error}), 503
+    
+    try:
+        # Just check if pdf2zh responds
+        result = subprocess.run(
+            ["pdf2zh", "--version"],
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        
+        return jsonify({
+            "success": True,
+            "stdout": result.stdout[:500] if result.stdout else "",
+            "stderr": result.stderr[:500] if result.stderr else "",
+            "returncode": result.returncode,
+            "python_version": sys.version,
+            "memory_info": "Check Railway Metrics"
+        })
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
 
 @app.route("/", methods=["GET"])
 def root():
