@@ -184,6 +184,7 @@ def translate_pdf_async(job_id, pdf_url, target_lang, callback_url, book_id):
 
 def send_callback(callback_url, book_id, status, progress=None, translated_url=None, error=None):
     if not callback_url:
+        log(f"[Callback] No callback URL provided for book {book_id}")
         return
     try:
         payload = {"bookId": book_id, "status": status}
@@ -193,9 +194,15 @@ def send_callback(callback_url, book_id, status, progress=None, translated_url=N
             payload["translatedFileUrl"] = translated_url
         if error:
             payload["error"] = error
-        requests.post(callback_url, json=payload, timeout=10)
+        
+        log(f"[Callback] Sending to {callback_url}")
+        log(f"[Callback] Payload: {payload}")
+        
+        response = requests.post(callback_url, json=payload, timeout=30)
+        log(f"[Callback] Response: {response.status_code} - {response.text[:200]}")
+        
     except Exception as e:
-        print(f"[Callback] Failed: {e}")
+        log(f"[Callback] Failed: {e}")
 
 @app.route("/health", methods=["GET"])
 def health():
