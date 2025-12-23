@@ -125,7 +125,7 @@ def translate_pdf_async(job_id, pdf_url, target_lang, callback_url, book_id):
             cmd,
             capture_output=True,
             text=True,
-            timeout=1200,  # 20 minutes timeout
+            timeout=3600,  # 60 minutes timeout for large PDFs with slow APIs
             cwd=work_dir,
             env=os.environ.copy()  # Pass all environment variables to subprocess
         )
