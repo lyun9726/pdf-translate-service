@@ -198,7 +198,14 @@ def send_callback(callback_url, book_id, status, progress=None, translated_url=N
         log(f"[Callback] Sending to {callback_url}")
         log(f"[Callback] Payload: {payload}")
         
-        response = requests.post(callback_url, json=payload, timeout=30)
+        # Add Vercel protection bypass header if available
+        headers = {"Content-Type": "application/json"}
+        bypass_secret = os.environ.get("VERCEL_PROTECTION_BYPASS")
+        if bypass_secret:
+            headers["x-vercel-protection-bypass"] = bypass_secret
+            log(f"[Callback] Using Vercel protection bypass")
+        
+        response = requests.post(callback_url, json=payload, headers=headers, timeout=30)
         log(f"[Callback] Response: {response.status_code} - {response.text[:200]}")
         
     except Exception as e:
