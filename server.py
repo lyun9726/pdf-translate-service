@@ -108,11 +108,15 @@ def translate_pdf_async(job_id, pdf_url, target_lang, callback_url, book_id):
         # Default to Google Translate (free) unless PDF2ZH_SERVICE env var is set
         service = os.environ.get("PDF2ZH_SERVICE", "google")
         
+        # Get thread count for parallel processing (default: 8 threads for speed)
+        threads = os.environ.get("PDF2ZH_THREADS", "8")
+        
         cmd = [
             "pdf2zh",
             input_path,
             "-lo", target_lang,
             "-s", service,  # Use specified translation service
+            "-t", threads,  # Number of threads for parallel processing
             "-o", work_dir
         ]
         
