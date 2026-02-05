@@ -1,6 +1,6 @@
-FROM python:3.11-slim-bookworm
+FROM python:3.12-slim-bookworm
 
-# Install system dependencies for pdf2zh and its ML components
+# Install system dependencies for BabelDOC and its ML components
 RUN apt-get update && apt-get install -y --no-install-recommends \
     wget \
     curl \
@@ -14,15 +14,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python packages step by step for better error messages
-RUN pip install --no-cache-dir flask gunicorn flask-cors requests
+# Install uv for package management (recommended by BabelDOC)
+RUN pip install --no-cache-dir uv
 
-# Install pdf2zh separately to see any errors
-RUN pip install --no-cache-dir pdf2zh || echo "pdf2zh installation warning, continuing..."
+# Install BabelDOC using uv
+RUN uv pip install --system BabelDOC
+
+# Install other Python dependencies
+RUN pip install --no-cache-dir flask gunicorn flask-cors requests boto3
 
 WORKDIR /app
 COPY server.py .
 
 ENV PORT=8080
 
-CMD gunicorn --bind 0.0.0.0:$PORT --timeout 1200 --workers 1 server:app
+# Increase timeout for long-running translations
+CMD gunicorn --bind 0.0.0.0:$PORT --timeout 1200 --workers 2 server:app
